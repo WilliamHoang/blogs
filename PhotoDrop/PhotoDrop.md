@@ -1,13 +1,23 @@
 PhotoDrop
 =========
 
-One of the cool features of Couchbase Lite that hasn’t been featured much is an ability to do P2P replication between two devices. Couchbase Lite is packaged with an extra component called `Couchbase Lite Listener` that allows your application to accept HTTP connections from other devices running Couchbase Lite and exchange data with them in either push or pull direction.
+One of the cool features of Couchbase Lite that hasn’t been featured much is an ability to do P2P replication between two devices on the same local network. Couchbase Lite is packaged with an extra component called `Couchbase Lite Listener` that allows your application to accept HTTP connections from other devices running Couchbase Lite and exchange data with them in either push or pull direction.
 
-A couple months ago, Wayne Carter and Traun Leyden skyped me in and sold me an idea of creating a simple P2P photo sharing app that can demonstrate how easily we can develop a P2P application by using Couchbase Lite. I was engaged  since then and spent a couple days working on this little P2P iOS photo sharing app, and I called it `PhotoDrop`. In this blog post, I will show you how I use Couchbase Lite to develop the application.
+A couple months ago, Wayne Carter and Traun Leyden skyped me in and sold me an idea about creating a simple P2P photo sharing app that can demonstrate how easily we can develop a P2P application by using Couchbase Lite. I was engaged  since then and spent a couple days working on this little P2P iOS photo sharing app, and I called it `PhotoDrop`. In this blog post, I will show you how I use Couchbase Lite to develop the application.
 
 Overview
 --------
-`PhotoDrop` is a P2P photo sharing app similar to the iOS `AirDrop` feature that you can send photos across different devices. P2P discovery is a difficult subject especially when combining with identity and security issues. To make things simple, I use the classic QRCode for discovering other peers and ignore both identity and security matter all together. The flow of the application is fairly simple. You select photos you want to share to your friend and open the QRCode scanner to scan the target endpoint that the photo will be sent to. On another side, your friend opens the appliation, shows up the QRCode and waits for you to scan and send the photos.
+`PhotoDrop` is a P2P photo sharing app similar to the iOS `AirDrop` feature that we can use to send photos across devices. Before jumping straight to the code, I would like to briefly discuss about some concerns and design choices that have been made when developing the application.
+
+**Peer Discovery** can be done in several ways. In iOS, we can use the `Bonjour Service` for discovering peers but this could be an issue if we later want to develop the application in other platforms. In PhotoDrop, we are using a simpler and more direct way, which is using the `QRCode`. We use the QRCode to advertise an adhoc endpoint URL that a sender can scan and send photos to.
+
+**Peer Identity** is a related subject to the Peer Discovery. Peer Identiy is normally difficult to solve without introducing some undesired steps into the application such as user registration, user login, and peer approval. With QRCode, the issue is mitigated by the scanning action that two people need to have direct interaction in order to send and receive the photos.
+
+**Authentication** is needed to ensure that the access control, for this case the write access to push photos into another peer's database, is granted to the right person. In PhotoDrop, we are using the Basic Auth that Couchbase Lite Listener has already supported. We securely generate an one-time username and password, bundle them together with the URL endpoint and encode them all into a QRCode presented by a receiver to a sender. Once the sender scans the QRCode, the sender will have the username and password ready to perform the basic authentication, which is already done automatically and seamlessly by Couchbase Lite.
+
+**Secure Channel** is requried especially for sending sensitive information. We are not yet implementing the secure communication feature. However, recently Jen Alfke added a SSL support including an API to generate a self-signed certificate on the fly to the iOS Couchbase Lite Listener. As all the hard work has been done, we could add support for this feature pretty easily.
+
+After all, the current flow of the PhotoDrop is fairly simple. You select photos you want to share to your friend and open the QRCode scanner to scan the target endpoint that the photo will be sent to. On another side, your friend opens the appliation, shows up the QRCode and waits for you to scan and send the photos. The next section will provide all implementation detail of the application.
 
 Selecting photos
 ----------------
@@ -258,33 +268,66 @@ Receiving photos is done in `ReceiveViewController` which is presented from the 
             return;
         }
 
-        startListener()
+        if (!startListener()) {
+            AppDelegate.showMessage("Cannot start listener", title: "Error")
+            return;
+        }
 
-        if let url = syncUrl()?.absoluteString {
-            imageView.image = UIImage.qrCodeImageForString(url,
+        if syncUrl != nil {
+            imageView.image = UIImage.qrCodeImageForString(syncUrl.absoluteString,
                 size: imageView.frame.size)
         }
     }
 
 	// MARK: - Listener
-    func startListener() {
+    func startListener() -> Bool {
         if listener != nil {
-            return
+            return true
         }
 
         var error: NSError?
         listener = CBLListener(manager: CBLManager.sharedInstance(), port: 0)
+
+		// Enable Basic Authentication
+        listener.requiresAuth = true
+        let username = secureGenerateKey(NSCharacterSet.URLUserAllowedCharacterSet())
+        let password = secureGenerateKey(NSCharacterSet.URLPasswordAllowedCharacterSet())
+        listener.setPasswords([username : password])
+
         var success = listener.start(&error)
         if success {
+            // Set a sync url with the generated username and password:
+            if let url = NSURL(string: database.name, relativeToURL: listener.URL) {
+                if let urlComp = NSURLComponents(string: url.absoluteString!) {
+                    urlComp.user = username
+                    urlComp.password = password
+                    syncUrl = urlComp.URL
+                }
+            }
+
+            // Start observing for database changes:
             startObserveDatabaseChange()
+            return true
         } else {
             listener = nil
-            AppDelegate.showMessage("Cannot start listener", title: "Error")
+            return false
         }
     }
 ```
 
-As you can see above, after starting the listener, the startObserveDatabaseChange() function is called to observe any changes happening to the database via notifications named `kCBLDatabaseChangeNotification`. We are now able to know when the photo documents from the other device are replicated so that we could save the photos into the device's camera roll accordingly.
+When we setup the listener from the above startListener() function, we also enable the Basic Authentication with a generated paired username and password. The generated username/password pair serves as a one-time password that can provide us a secure solution preventing unauthorized users who may keep watching for the url and push some documents to the receiver. To generate a username and password, we use the iOS Randomization Services API (SecRandomCopyBytes) that can generate cryptographically secure random numbers.
+
+```Swift
+	func secureGenerateKey(allowedCharacters: NSCharacterSet) -> String {
+        let data = NSMutableData(length:32)!
+        SecRandomCopyBytes(kSecRandomDefault, 32, UnsafeMutablePointer<UInt8>(data.mutableBytes))
+        let key = data.base64EncodedStringWithOptions(
+            NSDataBase64EncodingOptions.Encoding64CharacterLineLength)
+        return key.stringByAddingPercentEncodingWithAllowedCharacters(allowedCharacters)!
+    }
+```
+
+At the end of the startListener() function, the startObserveDatabaseChange() function is called to observe any changes happening to the database via notifications named `kCBLDatabaseChangeNotification`. We are now able to know when the photo documents from the other device are replicated so that we could save the photos into the device's camera roll accordingly.
 
 ```Swift
 	// ReceiveViewController.swift
@@ -308,7 +351,7 @@ As you can see above, after starting the listener, the startObserveDatabaseChang
     }
 ```
 
-The function to save a photo into to the device's camera roll is as below. The function simply gets the image from the attachment of the document, creates an CGImage representation and saves to the camera roll album via the ALAssetLibrary's writeImageDataToSavedPhotosAlbum() function. After saving a photo, we display the thumbnail version of the photo on the screen.
+The function to save a photo into to the device's camera roll is as below. The function simply gets the image from the attachment of the document, creates an CGImage representation and saves to the camera roll album via the ALAssetsLibrary's writeImageDataToSavedPhotosAlbum() function. After saving a photo, we display the thumbnail version of the photo on the screen.
 
 ```Swift
 	// ReceiveViewController.swift
@@ -345,8 +388,4 @@ The function to save a photo into to the device's camera roll is as below. The f
 Wrapping up
 -----------
 
-There are many ways to develop `PhotoDrop` app, and using `Couchbase Lite` is one way and perhaps one of the easiest ways to do it. Honestly the core code for sending and receiving photos is less than 100 lines of code with zero lines of code directly involving network or HTTP communication.
-
-Where to go from here? Recently Jens Alfke added the SSL support including a self-signed certificate generating API to the `Couchbase Lite Listener` so we could easily secure the communication channels during the replication. We could look more into the Bonjour service discovery API, which is actually already supported by the listener. Expanding to other platforms such as Android or even OS X could also be interesting.
-
-I hope this post give you some ideas about how to use Couchbase Lite to do P2P replication. Clone the [PhotoDrop](https://github.com/couchbaselabs/PhotoDrop-iOS) GitHub repo and play with it yourself. Let us know what you think.
+There are many ways to develop `PhotoDrop` app, and using `Couchbase Lite` is one way and perhaps one of the easiest ways to do it. The core code for sending and receiving photos is barely 100 lines of code and contains zero lines of code directly involving network or HTTP communication. I hope this blog post and PhotoDrop application itself could give you some inspiration and ideas to use Couchbase Lite to develop your P2P applications. Clone the [PhotoDrop](https://github.com/couchbaselabs/PhotoDrop-iOS) GitHub repo and play with it yourself. Let us know what you think.
