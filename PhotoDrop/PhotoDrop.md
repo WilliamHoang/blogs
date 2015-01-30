@@ -7,17 +7,17 @@ A couple months ago, Wayne Carter and Traun Leyden skyped me in and sold me an i
 
 Overview
 --------
-`PhotoDrop` is a P2P photo sharing app similar to the iOS `AirDrop` feature that we can use to send photos across devices. Before jumping straight to the code, I would like to briefly discuss about some concerns and design choices that have been made when developing the application.
+`PhotoDrop` is a P2P photo sharing app similar to the iOS `AirDrop` feature that we can use to send photos across Apple devices. Before jumping straight to the code, I would like to briefly discuss the concerns and design choices that were made when developing the application.
 
-**Peer Discovery** can be done in several ways. In iOS, we can use the `Bonjour Service` for discovering peers but this could be an issue if we later want to develop the application in other platforms. In PhotoDrop, we are using a simpler and more direct way, which is using the `QRCode`. We use the QRCode to advertise an adhoc endpoint URL that a sender can scan and send photos to.
+**Peer Discovery** can be done in several ways. In iOS, we can use the `Bonjour Service` for discovering peers but this could be an issue for later when we want to develop the application in other platforms. In PhotoDrop, we are using a simpler and more direct way, which is using the `QRCode`. We use the QRCode to advertise an adhoc endpoint URL that a sender can scan and send photos to.
 
-**Peer Identity** is a related subject to the Peer Discovery. Peer Identiy is normally difficult to solve without introducing some undesired steps into the application such as user registration, user login, and peer approval. With QRCode, the issue is mitigated by the scanning action that two people need to have direct interaction in order to send and receive the photos.
+**Peer Identity** is a related subject to the Peer Discovery. Peer Identiy is normally difficult to solve without introducing undesired steps into the application such as user registration, user login, and peer approval. With QRCode, the issue is mitigated by the expicit scanning action that two people need to have iniatiated in order to send and receive the photos.
 
-**Authentication** is needed to ensure that the access control, for this case the write access to push photos into another peer's database, is granted to the right person. In PhotoDrop, we are using the Basic Auth that Couchbase Lite Listener has already supported. We securely generate an one-time username and password, bundle them together with the URL endpoint and encode them all into a QRCode presented by a receiver to a sender. Once the sender scans the QRCode, the sender will have the username and password ready to perform the basic authentication, which is already done automatically and seamlessly by Couchbase Lite.
+**Authentication** is needed to ensure that the access control, for this case the WRITE access to push photos into another peer's database, is granted to the right person. In PhotoDrop, we are using the Basic Auth that Couchbase Lite Listener has already supported. We securely generate a one-time username and password, bundle them together with the URL endpoint and then encode them all into a QRCode to be presented by a receiver to a sender. Once the sender scans the QRCode, the sender will have the username and password ready to perform the basic authentication, which is already done automatically and seamlessly by Couchbase Lite.
 
-**Secure Channel** is requried especially for sending sensitive information. We are not yet implementing the secure communication feature. However, recently Jen Alfke added a SSL support including an API to generate a self-signed certificate on the fly to the iOS Couchbase Lite Listener. As all the hard work has been done, we could add support for this feature pretty easily.
+**Secure Channel** is required especially for sending sensitive information. We are not yet implementing the secure communication feature. However, recently Jen Alfke added a SSL support including an API to generate a self-signed certificate on the fly to the iOS Couchbase Lite Listener. As all the hard work has been done, we could add support for this feature pretty easily.
 
-After all, the current flow of the PhotoDrop is fairly simple. You select photos you want to share to your friend and open the QRCode scanner to scan the target endpoint that the photo will be sent to. On another side, your friend opens the appliation, shows up the QRCode and waits for you to scan and send the photos. The next section will provide all implementation detail of the application.
+After all, the current flow of the PhotoDrop is fairly simple. You select photos you want to share to your friend and open the QRCode scanner to scan the target endpoint that the photo will be sent to. For the receiver on the another side, your friend opens the application, shows up the QRCode and waits for you to scan and send the photos. The next section will provide all the implementation details of the application.
 
 Selecting photos
 ----------------
@@ -88,7 +88,7 @@ The photo assets are displayed in a UICollectionViewController. A simple custom 
 
 Sending photos
 --------------
-When the selected photos are ready to send as the send button is touched, the SendViewController will be  presented and set with the selected photos.
+When the selected photos are ready to send as the send button is touched, the SendViewController will be presented and set with the selected photos.
 
 ```Swift
 	// ViewController.swift
